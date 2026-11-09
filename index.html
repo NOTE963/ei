@@ -118,6 +118,7 @@ button.ng { background:var(--bad); border-color:var(--bad); color:#fff; }
 .hint { font-size:.85rem; color:var(--muted); min-height:1.3em; }
 .rank-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
 .rank-list li { display:grid; grid-template-columns:2.2em 1fr auto; gap:10px; align-items:baseline; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:10px 14px; }
+.rank-list li.me { border-color:var(--accent); border-width:2px; }
 .rank-list .n { font-family:var(--font-mono); font-weight:700; color:var(--muted); }
 .rank-list li:nth-child(-n+3) .n { color:var(--accent); }
 .rank-list .nm { font-weight:700; overflow-wrap:anywhere; min-width:0; }
@@ -134,6 +135,7 @@ button.ng { background:var(--bad); border-color:var(--bad); color:#fff; }
   <section class="home" id="home">
     <header><h1><span>Unit 5</span> 単語タイピング</h1></header>
     <p>日本語の意味を見て、英単語を入力しよう。モードを選んでスタート。</p>
+    <div class="submit" style="border:0;padding:0"><label for="pname">ランキングに出る名前（12文字まで）</label><input type="text" id="pname" maxlength="12" placeholder="ななし" autocomplete="nickname" style="width:100%"></div>
     <button class="mode" data-mode="free"><b>無限モード</b><span>30語をシャッフルして、ずっと出題。答えはボタンを押すまで出ません。</span><em id="hFree"></em></button>
     <button class="mode" data-mode="test"><b>テストモード</b><span>30語を1回ずつ、全部出題。最後に点数と間違えた単語を表示。</span><em id="hTest"></em></button>
     <button class="mode" data-mode="chal"><b>チャレンジモード</b><span>1回でも間違えたら終了。何問連続で正解できるか挑戦。</span><em id="hChal"></em></button>
@@ -368,10 +370,10 @@ function finish(typed) {
     h += missed.length ? '<p>間違えた単語（' + missed.length + '）</p><ul class="miss">' + missed.map(m => '<li><span class="w">' + esc(m[0]) + '</span><span class="j">' + esc(m[1]) + '</span></li>').join("") + '</ul>'
       : '<p>全問正解！パーフェクトです。</p>';
   }
-  if (res.score > 0) h += '<div class="submit"><label for="rname">ランキングに登録（名前は12文字まで）</label><div class="line"><input type="text" id="rname" maxlength="12" placeholder="なまえ" autocomplete="nickname" value="' + esc(store.get("name") || "") + '"><button type="button" class="primary" id="rsend">登録</button></div><div class="hint" id="rhint"></div></div>';
+  h += '<div class="hint" id="rhint"></div>';
   h += '<div class="row"><button type="button" class="primary" id="again">もう一度</button><button type="button" id="toHome">ホームへ</button></div>';
   r.innerHTML = h; show("result");
-  if ($("rsend")) $("rsend").onclick = () => sendScore(res);
+  autoSend(res, nb);
   const m = mode;
   $("again").onclick = () => start(m);
   if (m === "test") { const c = document.createElement("button"); c.type = "button"; c.textContent = "順番を選び直す"; c.onclick = () => show("order"); $("again").parentNode.insertBefore(c, $("toHome")); }
@@ -390,21 +392,30 @@ let db = null;
 try { if (window.firebase) { firebase.initializeApp(FB_CFG); db = firebase.firestore(); } } catch (e) { db = null; }
 const COL = { chal: "ranking_chal", test: "ranking_test" };
 const NO_DB = "ランキングに接続できません。HTMLファイルをブラウザで直接開き、ネットに接続してください。";
-let sent = false;
-async function sendScore(res) {
-  const hint = $("rhint"), name = $("rname").value.trim().slice(0, 12);
-  if (!db) { hint.textContent = NO_DB; return; }
-  if (!name) { hint.textContent = "名前を入力してください。"; return; }
-  if ($("rsend").dataset.done) return;
-  $("rsend").disabled = true; hint.textContent = "送信中…";
-  store.set("name", name);
+const myName = () => (store.get("name") || "ななし").slice(0, 12);
+const uid = () => { let u = store.get("uid"); if (!u) { u = Math.random().toString(36).slice(2, 10) + Date.now().toString(36); store.set("uid", u); } return u; };
+const docId = k => uid() + "_" + k;
+function buildDoc(res) {
   const rank = res.kind === "chal" ? res.score * 1e13 - Date.now() : res.score * 1e7 - Math.min(res.ms, 9999999);
-  const doc = { name, score: res.score, rank, createdAt: firebase.firestore.FieldValue.serverTimestamp() };
-  if (res.kind === "test") { doc.ms = res.ms; doc.order = res.order; }
-  try {
-    await db.collection(COL[res.kind]).add(doc);
-    $("rsend").dataset.done = "1"; $("rsend").textContent = "登録済み"; hint.textContent = "登録しました。ホームのランキングで見られます。";
-  } catch (e) { $("rsend").disabled = false; hint.textContent = "登録できませんでした。通信を確認してもう一度試してください。"; }
+  const d = { name: myName(), score: res.score, rank, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
+  if (res.kind === "test") { d.ms = res.ms; d.order = res.order; }
+  return d;
+}
+async function autoSend(res, nb) {
+  const hint = $("rhint");
+  if (!nb || res.score <= 0) { hint.textContent = "最高記録ではないので、ランキングはそのままです。"; return; }
+  if (!db) { hint.textContent = NO_DB; return; }
+  hint.textContent = "ランキングに登録中…";
+  try { await db.collection(COL[res.kind]).doc(docId(res.kind)).set(buildDoc(res)); hint.textContent = "最高記録をランキングに登録しました。"; }
+  catch (e) { hint.textContent = "ランキングに登録できませんでした。通信を確認してください。"; }
+}
+async function syncName() {
+  if (!db) return;
+  const n = myName();
+  for (const k of ["chal", "test"]) {
+    if (!(k === "chal" ? rec.chal : rec.test)) continue;
+    try { await db.collection(COL[k]).doc(docId(k)).set({ name: n }, { merge: true }); } catch (e) {}
+  }
 }
 let rankKind = "chal";
 async function loadRank() {
@@ -422,10 +433,13 @@ async function loadRank() {
     snap.forEach(d => {
       const x = d.data(); i++;
       const sc = kind === "chal" ? x.score + " 問連続" : x.score + " / 30<small>" + fmt(x.ms || 0) + (x.order === "seq" ? "・順番" : "・ランダム") + "</small>";
-      list.insertAdjacentHTML("beforeend", '<li><span class="n">' + i + '</span><span class="nm">' + esc(x.name || "?") + '</span><span class="sc">' + sc + '</span></li>');
+      list.insertAdjacentHTML("beforeend", '<li' + (d.id === docId(kind) ? ' class="me"' : '') + '><span class="n">' + i + '</span><span class="nm">' + esc(x.name || "?") + '</span><span class="sc">' + sc + '</span></li>');
     });
   } catch (e) { m.textContent = "読み込めませんでした。通信状態を確認してください。"; }
 }
+$("pname").value = store.get("name") || "";
+$("pname").addEventListener("input", e => store.set("name", e.target.value.trim().slice(0, 12)));
+$("pname").addEventListener("change", syncName);
 $("toRank").addEventListener("click", () => { show("rank"); loadRank(); });
 $("rankBack").addEventListener("click", home);
 document.querySelectorAll("#rankSeg button").forEach(b => b.addEventListener("click", () => { rankKind = b.dataset.k; loadRank(); }));
