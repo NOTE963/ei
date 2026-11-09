@@ -34,6 +34,7 @@
   --accent: #8f8dff; --accent-ink: #141230; --mark: #e6c93a; --good: #4cc98a; --bad: #ff7a6e;
   color-scheme: dark;
 }
+[hidden] { display: none !important; }
 * { box-sizing: border-box; }
 body {
   background: var(--bg); color: var(--ink); font-family: var(--font-jp); font-size: 16px;
@@ -88,7 +89,7 @@ button:active { transform: translateY(1px); }
 .mode span { font-size:.85rem; font-weight:500; color:var(--muted); }
 .mode em { font-style:normal; font-family:var(--font-mono); font-size:.8rem; color:var(--accent); }
 .mode:hover { border-color:var(--accent); }
-.back { flex:none; padding:6px 12px; font-size:.8rem; border-width:1px; border-radius:8px; }
+.back { flex:none; color:var(--muted); border-color:var(--line); padding:6px 12px; font-size:.8rem; border-width:1px; border-radius:8px; }
 .result { background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:26px 22px; display:flex; flex-direction:column; gap:16px; }
 .result h2 { margin:0; font-size:1rem; color:var(--muted); letter-spacing:.1em; }
 .big { font-family:var(--font-mono); font-weight:700; font-size:3.4rem; line-height:1; color:var(--accent); font-variant-numeric:tabular-nums; }
@@ -99,7 +100,9 @@ button:active { transform: translateY(1px); }
 .miss .w { font-family:var(--font-mono); font-weight:700; color:var(--bad); }
 .miss .j { font-size:.85rem; color:var(--muted); min-width:0; }
 .newbest { background:var(--mark); color:#26233f; align-self:flex-start; padding:2px 10px; border-radius:6px; font-weight:900; font-size:.85rem; }
-@media (prefers-reduced-motion: reduce) { .card.shake input { animation: none; } }
+@keyframes slidein { from { opacity:0; transform:translateX(28px); } to { opacity:1; transform:none; } }
+.slide { animation: slidein .28s ease-out; }
+@media (prefers-reduced-motion: reduce) { .slide { animation: none; } .card.shake input { animation: none; } }
 </style>
 
 </head>
@@ -111,6 +114,14 @@ button:active { transform: translateY(1px); }
     <button class="mode" data-mode="free"><b>無限モード</b><span>30語をシャッフルして、ずっと出題。答えはボタンを押すまで出ません。</span><em id="hFree"></em></button>
     <button class="mode" data-mode="test"><b>テストモード</b><span>30語を1回ずつ、全部出題。最後に点数と間違えた単語を表示。</span><em id="hTest"></em></button>
     <button class="mode" data-mode="chal"><b>チャレンジモード</b><span>1回でも間違えたら終了。何問連続で正解できるか挑戦。</span><em id="hChal"></em></button>
+  </section>
+
+  <section class="home" id="order" hidden>
+    <header><h1><span>テスト</span>モード</h1></header>
+    <p>30問の出題順を選んでください。</p>
+    <button class="mode" data-order="seq"><b>順番どおり</b><span>プリントの順番（1 → 30）で出題します。</span></button>
+    <button class="mode" data-order="rand"><b>ランダム</b><span>30語をシャッフルして出題します。</span></button>
+    <p class="note"><button type="button" class="back" id="orderBack">ホームにもどる</button></p>
   </section>
 
   <section id="play" hidden>
@@ -160,7 +171,7 @@ const store = {
 };
 let rec = { free: store.get("free") || 0, chal: store.get("chal") || 0, test: store.get("test") || null };
 
-let mode = null, bag = [], queue = [], idx = 0, cur = null, state = "ask", timer = null, last = -1;
+let testOrder = "rand", mode = null, bag = [], queue = [], idx = 0, cur = null, state = "ask", timer = null, last = -1;
 let score = 0, streak = 0, best = 0, tried = false, missed = [], t0 = 0;
 
 const norm = s => s.toLowerCase().replace(/\s+/g, " ").trim();
@@ -173,7 +184,11 @@ function draw() {
   last = bag.pop();
   return WORDS[last];
 }
-function show(id) { for (const x of ["home", "play", "result"]) $(x).hidden = x !== id; }
+function show(id) {
+  for (const x of ["home", "order", "play", "result"]) $(x).hidden = x !== id;
+  const el = $(id); el.classList.remove("slide"); void el.offsetWidth; el.classList.add("slide");
+  window.scrollTo(0, 0);
+}
 function home() {
   clearTimeout(timer); mode = null;
   $("hFree").textContent = rec.free ? "最高連続 " + rec.free + " 問" : "";
@@ -188,9 +203,10 @@ function renderStats() {
     : mode === "test" ? stat("問題", Math.min(idx, 30) + "/30") + stat("正解", score)
     : stat("連続", streak) + stat("最高", Math.max(streak, rec.chal));
 }
-function start(m) {
+function start(m, order) {
+  if (m === "test") { testOrder = order || testOrder; }
   mode = m; score = 0; streak = 0; best = 0; missed = []; idx = 0; bag = []; t0 = Date.now();
-  queue = m === "test" ? shuffle(WORDS.slice()) : [];
+  queue = m === "test" ? (testOrder === "seq" ? WORDS.slice() : shuffle(WORDS.slice())) : [];
   $("note").textContent = NOTES[m];
   show("play"); next();
 }
@@ -260,13 +276,16 @@ function finish(typed) {
   r.innerHTML = h; show("result");
   const m = mode;
   $("again").onclick = () => start(m);
+  if (m === "test") { const c = document.createElement("button"); c.type = "button"; c.textContent = "順番を選び直す"; c.onclick = () => show("order"); $("again").parentNode.insertBefore(c, $("toHome")); }
   $("toHome").onclick = home;
 }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 card.addEventListener("submit", e => { e.preventDefault(); check(); });
 $("reveal").addEventListener("click", reveal);
 $("back").addEventListener("click", () => { if (mode === "free" && best > rec.free) { rec.free = best; store.set("free", best); } home(); });
-document.querySelectorAll(".mode").forEach(b => b.addEventListener("click", () => start(b.dataset.mode)));
+document.querySelectorAll("#home .mode").forEach(b => b.addEventListener("click", () => b.dataset.mode === "test" ? show("order") : start(b.dataset.mode)));
+document.querySelectorAll("#order .mode").forEach(b => b.addEventListener("click", () => start("test", b.dataset.order)));
+$("orderBack").addEventListener("click", home);
 home();
 </script>
 </body>
