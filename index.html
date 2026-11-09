@@ -100,6 +100,14 @@ button:active { transform: translateY(1px); }
 .miss .w { font-family:var(--font-mono); font-weight:700; color:var(--bad); }
 .miss .j { font-size:.85rem; color:var(--muted); min-width:0; }
 .newbest { background:var(--mark); color:#26233f; align-self:flex-start; padding:2px 10px; border-radius:6px; font-weight:900; font-size:.85rem; }
+.seg { display:flex; gap:0; align-self:flex-start; background:var(--paper); border:2px solid var(--ink); border-radius:10px; overflow:hidden; }
+.seg button { flex:none; border:0; border-radius:0; padding:7px 18px; font-size:.9rem; background:var(--paper); }
+.seg button.on { background:var(--ink); color:var(--paper); }
+#padWrap { position:relative; }
+#pad { display:block; width:100%; height:170px; background:var(--bg); border:2px solid var(--line); border-radius:12px; touch-action:none; cursor:crosshair; }
+#padHint { position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); font-size:.9rem; pointer-events:none; }
+button.ok { background:var(--good); border-color:var(--good); color:#fff; }
+button.ng { background:var(--bad); border-color:var(--bad); color:#fff; }
 @keyframes slidein { from { opacity:0; transform:translateX(28px); } to { opacity:1; transform:none; } }
 .slide { animation: slidein .28s ease-out; }
 @media (prefers-reduced-motion: reduce) { .slide { animation: none; } .card.shake input { animation: none; } }
@@ -130,14 +138,19 @@ button:active { transform: translateY(1px); }
       <div class="stats" id="stats" aria-live="polite"></div>
     </header>
     <form class="card" id="card" autocomplete="off" style="margin-top:16px">
+      <div class="seg" id="seg" role="group" aria-label="解答の方法"><button type="button" data-im="type" class="on">入力</button><button type="button" data-im="write">書く</button></div>
       <span class="label" id="modeLabel">この意味の英単語は？</span>
       <div class="prompt" id="prompt">…</div>
       <div class="field">
         <input type="text" id="answer" aria-label="英単語を入力" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="英語を入力して Enter">
       </div>
+      <div id="padWrap" hidden><canvas id="pad" aria-label="手書きの解答欄"></canvas><div id="padHint">ここに指やペンで書く</div></div>
       <div class="msg" id="msg"></div>
       <div class="row">
+        <button type="button" id="clear" hidden>消す</button>
         <button type="button" id="reveal">答えを見る</button>
+        <button type="button" class="ng" id="ng" hidden>× ちがった</button>
+        <button type="button" class="ok" id="okb" hidden>○ 合ってた</button>
         <button type="submit" class="primary" id="go">答え合わせ</button>
       </div>
     </form>
@@ -171,6 +184,7 @@ const store = {
 };
 let rec = { free: store.get("free") || 0, chal: store.get("chal") || 0, test: store.get("test") || null };
 
+let inputMode = store.get("im") === "write" ? "write" : "type", inked = false;
 let testOrder = "rand", mode = null, bag = [], queue = [], idx = 0, cur = null, state = "ask", timer = null, last = -1;
 let score = 0, streak = 0, best = 0, tried = false, missed = [], t0 = 0;
 
@@ -222,14 +236,70 @@ function next() {
   input.value = ""; input.disabled = false;
   msg.className = "msg"; msg.textContent = "";
   $("reveal").textContent = mode === "chal" ? "ギブアップ" : "答えを見る"; $("go").hidden = false;
-  renderStats(); input.focus();
+  renderStats(); ui();
 }
+const pad = $("pad"), ctx = pad.getContext("2d");
+function sizePad() {
+  const r = pad.getBoundingClientRect(); if (!r.width) return;
+  const d = window.devicePixelRatio || 1; pad.width = r.width * d; pad.height = r.height * d;
+  ctx.setTransform(d, 0, 0, d, 0, 0); ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.lineWidth = 4;
+}
+function clearPad() { ctx.clearRect(0, 0, pad.width, pad.height); inked = false; $("padHint").hidden = false; }
+function ui() {
+  const w = inputMode === "write", self = state === "self";
+  document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.im === inputMode));
+  input.hidden = w; $("padWrap").hidden = !w;
+  $("clear").hidden = !(w && state === "ask");
+  $("go").hidden = w || state === "revealed";
+  $("reveal").hidden = self;
+  $("reveal").classList.toggle("primary", w);
+  if (state === "ask") $("reveal").textContent = (w || mode !== "chal") ? "答えを見る" : "ギブアップ";
+  $("ng").hidden = $("okb").hidden = !self;
+  if (w) { if (state === "ask") { sizePad(); clearPad(); } }
+  else if (state === "ask") input.focus();
+}
+let drawing = false;
+pad.addEventListener("pointerdown", e => {
+  if (state !== "ask") return;
+  drawing = true; pad.setPointerCapture(e.pointerId);
+  const r = pad.getBoundingClientRect(); ctx.strokeStyle = getComputedStyle(document.body).color;
+  ctx.beginPath(); ctx.moveTo(e.clientX - r.left, e.clientY - r.top);
+  ctx.lineTo(e.clientX - r.left + .1, e.clientY - r.top + .1); ctx.stroke();
+  inked = true; $("padHint").hidden = true; e.preventDefault();
+});
+pad.addEventListener("pointermove", e => {
+  if (!drawing) return;
+  const r = pad.getBoundingClientRect(); ctx.lineTo(e.clientX - r.left, e.clientY - r.top); ctx.stroke();
+});
+["pointerup", "pointercancel"].forEach(t => pad.addEventListener(t, () => { drawing = false; }));
+$("clear").addEventListener("click", clearPad);
+document.querySelectorAll("#seg button").forEach(b => b.addEventListener("click", () => {
+  if (state === "self" || state === "ok") return;
+  inputMode = b.dataset.im; store.set("im", inputMode);
+  if (state === "revealed") { next(); return; }
+  ui();
+}));
+window.addEventListener("resize", () => { if (inputMode === "write" && state === "ask" && !inked) sizePad(); });
+function selfCheck() {
+  state = "self"; drawing = false;
+  msg.className = "msg"; msg.innerHTML = '答え： <span class="answer"></span>　自分の字と見比べて採点';
+  msg.querySelector(".answer").textContent = cur[0];
+  ui();
+}
+function selfResult(good) {
+  if (good) { correct(); ui(); return; }
+  if (mode === "chal") return finish();
+  if (mode === "test" && !tried) missed.push(cur);
+  streak = 0; renderStats(); next();
+}
+$("okb").addEventListener("click", () => selfResult(true));
+$("ng").addEventListener("click", () => selfResult(false));
 function correct() {
   state = "ok";
   if (!tried) { score++; streak++; if (streak > best) best = streak; }
   card.className = "card ok"; input.value = cur[0]; input.disabled = true;
   msg.className = "msg ok"; msg.textContent = "正解！";
-  renderStats(); timer = setTimeout(next, 650);
+  renderStats(); ui(); timer = setTimeout(next, 650);
 }
 function check() {
   if (state === "revealed") return next();
@@ -247,6 +317,7 @@ function check() {
 function reveal() {
   if (state === "revealed") return next();
   if (state !== "ask") return;
+  if (inputMode === "write") return selfCheck();
   if (mode === "chal") return finish();
   if (mode === "test" && !tried) missed.push(cur);
   tried = true; streak = 0; state = "revealed"; renderStats();
