@@ -6,6 +6,8 @@
 <title>Unit 5 単語タイピング</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&family=JetBrains+Mono:wght@500;700&display=swap">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <style>
 /* Layout: one centred "answer card" on lined notebook paper, stats strip above, buttons below. */
 :root {
@@ -108,6 +110,19 @@ button:active { transform: translateY(1px); }
 #padHint { position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); font-size:.9rem; pointer-events:none; }
 button.ok { background:var(--good); border-color:var(--good); color:#fff; }
 button.ng { background:var(--bad); border-color:var(--bad); color:#fff; }
+.submit { display:flex; flex-direction:column; gap:8px; border-top:1px dashed var(--line); padding-top:14px; }
+.submit label { font-size:.8rem; color:var(--muted); letter-spacing:.06em; }
+.submit .line { display:flex; gap:8px; }
+.submit input { font-family:var(--font-jp); font-size:1rem; padding:10px 12px; border-radius:10px; border:2px solid var(--line); background:var(--bg); color:var(--ink); flex:1; min-width:0; }
+.submit button { flex:none; padding:10px 16px; }
+.hint { font-size:.85rem; color:var(--muted); min-height:1.3em; }
+.rank-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+.rank-list li { display:grid; grid-template-columns:2.2em 1fr auto; gap:10px; align-items:baseline; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:10px 14px; }
+.rank-list .n { font-family:var(--font-mono); font-weight:700; color:var(--muted); }
+.rank-list li:nth-child(-n+3) .n { color:var(--accent); }
+.rank-list .nm { font-weight:700; overflow-wrap:anywhere; min-width:0; }
+.rank-list .sc { font-family:var(--font-mono); font-weight:700; text-align:right; }
+.rank-list small { display:block; font-family:var(--font-jp); font-weight:500; color:var(--muted); font-size:.72rem; }
 @keyframes slidein { from { opacity:0; transform:translateX(28px); } to { opacity:1; transform:none; } }
 .slide { animation: slidein .28s ease-out; }
 @media (prefers-reduced-motion: reduce) { .slide { animation: none; } .card.shake input { animation: none; } }
@@ -122,6 +137,7 @@ button.ng { background:var(--bad); border-color:var(--bad); color:#fff; }
     <button class="mode" data-mode="free"><b>無限モード</b><span>30語をシャッフルして、ずっと出題。答えはボタンを押すまで出ません。</span><em id="hFree"></em></button>
     <button class="mode" data-mode="test"><b>テストモード</b><span>30語を1回ずつ、全部出題。最後に点数と間違えた単語を表示。</span><em id="hTest"></em></button>
     <button class="mode" data-mode="chal"><b>チャレンジモード</b><span>1回でも間違えたら終了。何問連続で正解できるか挑戦。</span><em id="hChal"></em></button>
+    <button class="mode" id="toRank"><b>ランキング</b><span>みんなの記録を見る（チャレンジ／テスト）。</span></button>
   </section>
 
   <section class="home" id="order" hidden>
@@ -130,6 +146,13 @@ button.ng { background:var(--bad); border-color:var(--bad); color:#fff; }
     <button class="mode" data-order="seq"><b>順番どおり</b><span>プリントの順番（1 → 30）で出題します。</span></button>
     <button class="mode" data-order="rand"><b>ランダム</b><span>30語をシャッフルして出題します。</span></button>
     <p class="note"><button type="button" class="back" id="orderBack">ホームにもどる</button></p>
+  </section>
+
+  <section class="home" id="rank" hidden>
+    <header><button type="button" class="back" id="rankBack">← ホーム</button><h1><span>ランキング</span></h1></header>
+    <div class="seg" id="rankSeg"><button type="button" data-k="chal" class="on">チャレンジ</button><button type="button" data-k="test">テスト</button></div>
+    <div class="hint" id="rankMsg"></div>
+    <ol class="rank-list" id="rankList"></ol>
   </section>
 
   <section id="play" hidden>
@@ -199,7 +222,7 @@ function draw() {
   return WORDS[last];
 }
 function show(id) {
-  for (const x of ["home", "order", "play", "result"]) $(x).hidden = x !== id;
+  for (const x of ["home", "order", "rank", "play", "result"]) $(x).hidden = x !== id;
   const el = $(id); el.classList.remove("slide"); void el.offsetWidth; el.classList.add("slide");
   window.scrollTo(0, 0);
 }
@@ -329,13 +352,15 @@ function reveal() {
 }
 function finish(typed) {
   clearTimeout(timer);
-  const r = $("result"); let h = "", nb = false;
+  const r = $("result"); let h = "", nb = false, res;
   if (mode === "chal") {
     if (streak > rec.chal) { rec.chal = streak; store.set("chal", streak); nb = streak > 0; }
+    res = { kind: "chal", score: streak };
     h = '<h2>チャレンジ終了</h2><div class="big">' + streak + '<small> 問連続</small></div>' + (nb ? '<span class="newbest">最高記録！</span>' : '') +
       '<p>最高記録：' + rec.chal + ' 問連続<br>ミスした問題：<b>' + esc(cur[1]) + '</b> → <b style="color:var(--accent);font-family:var(--font-mono)">' + esc(cur[0]) + '</b>' + (typed ? '（入力：' + esc(typed) + '）' : '') + '</p>';
   } else {
     const ms = Date.now() - t0;
+    res = { kind: "test", score, ms, order: testOrder };
     const b = rec.test;
     if (!b || score > b.score || (score === b.score && ms < b.ms)) { rec.test = { score, ms }; store.set("test", rec.test); nb = true; }
     h = '<h2>テスト結果</h2><div class="big">' + score + '<small> / 30</small></div>' + (nb ? '<span class="newbest">ベスト更新！</span>' : '') +
@@ -343,18 +368,72 @@ function finish(typed) {
     h += missed.length ? '<p>間違えた単語（' + missed.length + '）</p><ul class="miss">' + missed.map(m => '<li><span class="w">' + esc(m[0]) + '</span><span class="j">' + esc(m[1]) + '</span></li>').join("") + '</ul>'
       : '<p>全問正解！パーフェクトです。</p>';
   }
+  if (res.score > 0) h += '<div class="submit"><label for="rname">ランキングに登録（名前は12文字まで）</label><div class="line"><input type="text" id="rname" maxlength="12" placeholder="なまえ" autocomplete="nickname" value="' + esc(store.get("name") || "") + '"><button type="button" class="primary" id="rsend">登録</button></div><div class="hint" id="rhint"></div></div>';
   h += '<div class="row"><button type="button" class="primary" id="again">もう一度</button><button type="button" id="toHome">ホームへ</button></div>';
   r.innerHTML = h; show("result");
+  if ($("rsend")) $("rsend").onclick = () => sendScore(res);
   const m = mode;
   $("again").onclick = () => start(m);
   if (m === "test") { const c = document.createElement("button"); c.type = "button"; c.textContent = "順番を選び直す"; c.onclick = () => show("order"); $("again").parentNode.insertBefore(c, $("toHome")); }
   $("toHome").onclick = home;
 }
+const FB_CFG = {
+  apiKey: "AIzaSyB95hJb_YWCn_AiR_qScSYKMvwYN7BJGsU",
+  authDomain: "mozya-bf314.firebaseapp.com",
+  projectId: "mozya-bf314",
+  storageBucket: "mozya-bf314.firebasestorage.app",
+  messagingSenderId: "115684072662",
+  appId: "1:115684072662:web:1dd02d698b5bd125ec3d77",
+  measurementId: "G-FYS15KSSJK"
+};
+let db = null;
+try { if (window.firebase) { firebase.initializeApp(FB_CFG); db = firebase.firestore(); } } catch (e) { db = null; }
+const COL = { chal: "ranking_chal", test: "ranking_test" };
+const NO_DB = "ランキングに接続できません。HTMLファイルをブラウザで直接開き、ネットに接続してください。";
+let sent = false;
+async function sendScore(res) {
+  const hint = $("rhint"), name = $("rname").value.trim().slice(0, 12);
+  if (!db) { hint.textContent = NO_DB; return; }
+  if (!name) { hint.textContent = "名前を入力してください。"; return; }
+  if ($("rsend").dataset.done) return;
+  $("rsend").disabled = true; hint.textContent = "送信中…";
+  store.set("name", name);
+  const rank = res.kind === "chal" ? res.score * 1e13 - Date.now() : res.score * 1e7 - Math.min(res.ms, 9999999);
+  const doc = { name, score: res.score, rank, createdAt: firebase.firestore.FieldValue.serverTimestamp() };
+  if (res.kind === "test") { doc.ms = res.ms; doc.order = res.order; }
+  try {
+    await db.collection(COL[res.kind]).add(doc);
+    $("rsend").dataset.done = "1"; $("rsend").textContent = "登録済み"; hint.textContent = "登録しました。ホームのランキングで見られます。";
+  } catch (e) { $("rsend").disabled = false; hint.textContent = "登録できませんでした。通信を確認してもう一度試してください。"; }
+}
+let rankKind = "chal";
+async function loadRank() {
+  const list = $("rankList"), m = $("rankMsg");
+  document.querySelectorAll("#rankSeg button").forEach(b => b.classList.toggle("on", b.dataset.k === rankKind));
+  list.innerHTML = "";
+  if (!db) { m.textContent = NO_DB; return; }
+  m.textContent = "読み込み中…";
+  const kind = rankKind;
+  try {
+    const snap = await db.collection(COL[kind]).orderBy("rank", "desc").limit(20).get();
+    if (kind !== rankKind) return;
+    m.textContent = snap.empty ? "まだ記録がありません。最初の1位をめざそう！" : "";
+    let i = 0;
+    snap.forEach(d => {
+      const x = d.data(); i++;
+      const sc = kind === "chal" ? x.score + " 問連続" : x.score + " / 30<small>" + fmt(x.ms || 0) + (x.order === "seq" ? "・順番" : "・ランダム") + "</small>";
+      list.insertAdjacentHTML("beforeend", '<li><span class="n">' + i + '</span><span class="nm">' + esc(x.name || "?") + '</span><span class="sc">' + sc + '</span></li>');
+    });
+  } catch (e) { m.textContent = "読み込めませんでした。通信状態を確認してください。"; }
+}
+$("toRank").addEventListener("click", () => { show("rank"); loadRank(); });
+$("rankBack").addEventListener("click", home);
+document.querySelectorAll("#rankSeg button").forEach(b => b.addEventListener("click", () => { rankKind = b.dataset.k; loadRank(); }));
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 card.addEventListener("submit", e => { e.preventDefault(); check(); });
 $("reveal").addEventListener("click", reveal);
 $("back").addEventListener("click", () => { if (mode === "free" && best > rec.free) { rec.free = best; store.set("free", best); } home(); });
-document.querySelectorAll("#home .mode").forEach(b => b.addEventListener("click", () => b.dataset.mode === "test" ? show("order") : start(b.dataset.mode)));
+document.querySelectorAll("#home .mode[data-mode]").forEach(b => b.addEventListener("click", () => b.dataset.mode === "test" ? show("order") : start(b.dataset.mode)));
 document.querySelectorAll("#order .mode").forEach(b => b.addEventListener("click", () => start("test", b.dataset.order)));
 $("orderBack").addEventListener("click", home);
 home();
